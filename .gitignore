@@ -1,3 +1,4 @@
 dist/*
 build/*
 pysmps.egg-info/*
+*.pyc

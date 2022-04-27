@@ -14,6 +14,7 @@ CORE_FILE_ROW_MODE = "ROWS"
 CORE_FILE_COL_MODE = "COLUMNS"
 CORE_FILE_RHS_MODE = "RHS"
 CORE_FILE_BOUNDS_MODE = "BOUNDS"
+CORE_FILE_OBJSENSE_MODE = "OBJSENSE"
 
 CORE_FILE_BOUNDS_MODE_NAME_GIVEN = "BOUNDS_NAME"
 CORE_FILE_BOUNDS_MODE_NO_NAME = "BOUNDS_NO_NAME"
@@ -177,7 +178,7 @@ def _load_time_file(path, name, row_names, col_names):
                     periods.append(line[1])
                 col_periods[col_names.index(line[0])] = line[1]
     if explicit and not (rows and cols):
-        raise Exception("Time format was explicit but some rows/cols don't have temporal information!")
+        raise MPSParseError("Time format was explicit but some rows/cols don't have temporal information!")
     return periods, row_periods, col_periods
             
 def _load_stoch_file(path, name, objective_name, row_names, col_names, rhs_names):
@@ -210,7 +211,7 @@ def _load_stoch_file(path, name, objective_name, row_names, col_names, rhs_names
                 elif line[1] == "DISCRETE":
                     mode = STOCH_FILE_BLOCKS_DISCRETE_MODE
                 else:
-                    raise Exception("BLOCKS section was initiated without another tag (LINTR, SUB, DISCRETE).")
+                    raise MPSParseError("BLOCKS section was initiated without another tag (LINTR, SUB, DISCRETE).")
             elif line[0] == STOCH_FILE_INDEP_MODE:
                 if line[1] == "DISCRETE":
                     mode = STOCH_FILE_INDEP_DISCRETE_MODE
@@ -246,7 +247,7 @@ def _load_stoch_file(path, name, objective_name, row_names, col_names, rhs_names
                     elif line[2] == "CONSTANT":
                         blocks[last_block].add_distribution("CONST. 1", line[1], {})
                     else:
-                        raise Exception("Looks like you are using an unknown distribution to this script. For now we only support NORMAL, UNIFORM and CONSTANT distributions.")
+                        raise MPSParseError("Looks like you are using an unknown distribution to this script. For now we only support NORMAL, UNIFORM and CONSTANT distributions.")
                     is_rv = True
                 elif not is_rv and last_block != "":
                     i, j = _get_indices(row_names, col_names, line)
@@ -290,7 +291,7 @@ def _load_stoch_file(path, name, objective_name, row_names, col_names, rhs_names
             elif mode == STOCH_FILE_INDEP_DISTRIB_MODE:
                 i, j = _get_indices(row_names, col_names, line)
                 if (i,j) in independent_variables:
-                    raise Exception("Tried to set independent distribution of an element twice.")
+                    raise MPSParseError("Tried to set independent distribution of an element twice.")
                 else:
                     if i < 0:
                         description = {"type": line[1], "VAR": j}
@@ -327,9 +328,13 @@ def _get_indices(row_names, col_names, line):
         pass
     return i, j
 # public
+class MPSParseError(Exception):
+    pass
+
 def load_mps(path):
     mode = ""
     name = None
+    objsense = ""
     objective_name = None
     row_names = []
     types = []
@@ -341,6 +346,7 @@ def load_mps(path):
     rhs = {}
     bnd_names = []
     bnd = {}
+    bnd_set = {}
     integral_marker = False
     
     with open(path, "r") as reader:
@@ -355,6 +361,8 @@ def load_mps(path):
                 continue
             if line[0] == "NAME":
                 name = line[1]
+            elif line[0] == CORE_FILE_OBJSENSE_MODE:
+                mode = CORE_FILE_OBJSENSE_MODE
             elif line[0] in [CORE_FILE_ROW_MODE, CORE_FILE_COL_MODE]:
                 mode = line[0]
             elif line[0] == CORE_FILE_RHS_MODE and len(line) <= 2:
@@ -371,6 +379,8 @@ def load_mps(path):
                     mode = CORE_FILE_BOUNDS_MODE_NAME_GIVEN
                 else:
                     mode = CORE_FILE_BOUNDS_MODE_NO_NAME
+            elif mode == CORE_FILE_OBJSENSE_MODE:
+                objsense = line[0]
             elif mode == CORE_FILE_ROW_MODE:
                 if line[0] == ROW_MODE_OBJ:
                     objective_name = line[1]
@@ -404,7 +414,7 @@ def load_mps(path):
                     j = j + 2
             elif mode == CORE_FILE_RHS_MODE_NAME_GIVEN:
                 if line[0] != rhs_names[-1]:
-                    raise Exception("Other RHS name was given even though name was set after RHS tag.")
+                    raise MPSParseError("Other RHS name was given even though name was set after RHS tag.")
                 for kk in range((len(line) - 1) // 2):
                   idx = kk * 2
                   rhs[line[0]][row_names.index(line[idx+1])] = float(line[idx+2])
@@ -420,7 +430,7 @@ def load_mps(path):
                   rhs[line[0]][row_names.index(line[idx+1])] = float(line[idx+2])
             elif mode == CORE_FILE_BOUNDS_MODE_NAME_GIVEN:
                 if line[1] != bnd_names[-1]:
-                    raise Exception("Other BOUNDS name was given even though name was set after BOUNDS tag.")
+                    raise MPSParseError("Other BOUNDS name was given even though name was set after BOUNDS tag.")
                 if line[0] in ["LO", "UP"]:
                     bnd[line[1]][line[0]][col_names.index(line[2])] = float(line[3])
                 elif line[0] == "FX":
@@ -431,18 +441,29 @@ def load_mps(path):
             elif mode == CORE_FILE_BOUNDS_MODE_NO_NAME:
                 try:
                     i = bnd_names.index(line[1])
-                except:
+                except ValueError:
                     bnd_names.append(line[1])
                     bnd[line[1]] = {"LO": np.zeros(len(col_names)), "UP": np.repeat(math.inf, len(col_names))}
+                    bnd_set[line[1]] = {"LO": [False]*len(col_names), "UP": [False]*len(col_names)}
                     i = -1
+                col_idx = col_names.index(line[2])
                 if line[0] in ["LO", "UP"]:
-                    bnd[line[1]][line[0]][col_names.index(line[2])] = float(line[3])
-                elif line[0] == "FX":
-                    bnd[line[1]]["LO"][col_names.index(line[2])] = float(line[3])
-                    bnd[line[1]]["UP"][col_names.index(line[2])] = float(line[3])
-                elif line[0] == "FR":
-                    bnd[line[1]]["LO"][col_names.index(line[2])] = -math.inf
-    return name, objective_name, row_names, col_names, col_types, types, c, A, rhs_names, rhs, bnd_names, bnd
+                    if bnd_set[line[1]][line[0]][col_idx]:
+                        raise MPSParseError(f"Boundary {line[0]} of column {line[2]} " \
+                            f"has been set to {bnd[line[1]][line[0]][col_idx]} and cannot be reset.")
+                    bnd[line[1]][line[0]][col_idx] = float(line[3])
+                    bnd_set[line[1]][line[0]][col_idx] = True
+                elif line[0] in ["FX", "FR"]:
+                    if bnd_set[line[1]]["LO"][col_idx] or bnd_set[line[1]]["UP"][col_idx]:
+                        raise MPSParseError(f"Boundary of column {line[2]} has been set to " \
+                            f"({bnd[line[1]]['LO'][col_idx]}, {bnd[line[1]]['UP'][col_idx]}) and cannot be reset.")
+                    bnd[line[1]]["LO"][col_idx] = float(line[3]) if line[0] == "FX" else -math.inf
+                    bnd[line[1]]["UP"][col_idx] = float(line[3]) if line[0] == "FX" else math.inf
+                    bnd_set[line[1]]["LO"][col_idx] = True
+                    bnd_set[line[1]]["UP"][col_idx] = True
+                # elif line[0] == "FR":
+                #     bnd[line[1]]["LO"][col_idx] = -math.inf
+    return name, objsense, objective_name, row_names, col_names, col_types, types, c, A, rhs_names, rhs, bnd_names, bnd
 
 def load_smps(path):
     name, objective_name, row_names, col_names, col_types, types, c, A, rhs_names, rhs, bnd_names, bnd = load_mps(path + ".cor")

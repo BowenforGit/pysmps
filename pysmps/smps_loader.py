@@ -396,7 +396,7 @@ def load_mps(path):
                     continue
                 try:
                     i = col_names.index(line[0])
-                except:
+                except ValueError:
                     if A.shape[1] == 0:
                         A = np.zeros((len(row_names), 1))
                     else:
@@ -421,7 +421,7 @@ def load_mps(path):
             elif mode == CORE_FILE_RHS_MODE_NO_NAME:
                 try:
                     i = rhs_names.index(line[0])
-                except:
+                except ValueError:
                     rhs_names.append(line[0])
                     rhs[line[0]] = np.zeros(len(row_names))
                     i = -1
@@ -438,6 +438,8 @@ def load_mps(path):
                     bnd[line[1]]["UP"][col_names.index(line[2])] = float(line[3])
                 elif line[0] == "FR":
                     bnd[line[1]]["LO"][col_names.index(line[2])] = -math.inf
+                else:
+                    raise MPSParseError(f"Bound type {bnd_spec} not supported.")
             elif mode == CORE_FILE_BOUNDS_MODE_NO_NAME:
                 try:
                     i = bnd_names.index(line[1])
@@ -446,23 +448,61 @@ def load_mps(path):
                     bnd[line[1]] = {"LO": np.zeros(len(col_names)), "UP": np.repeat(math.inf, len(col_names))}
                     bnd_set[line[1]] = {"LO": [False]*len(col_names), "UP": [False]*len(col_names)}
                     i = -1
-                col_idx = col_names.index(line[2])
-                if line[0] in ["LO", "UP"]:
-                    if bnd_set[line[1]][line[0]][col_idx]:
-                        raise MPSParseError(f"Boundary {line[0]} of column {line[2]} " \
-                            f"has been set to {bnd[line[1]][line[0]][col_idx]} and cannot be reset.")
-                    bnd[line[1]][line[0]][col_idx] = float(line[3])
-                    bnd_set[line[1]][line[0]][col_idx] = True
-                elif line[0] in ["FX", "FR"]:
-                    if bnd_set[line[1]]["LO"][col_idx] or bnd_set[line[1]]["UP"][col_idx]:
-                        raise MPSParseError(f"Boundary of column {line[2]} has been set to " \
-                            f"({bnd[line[1]]['LO'][col_idx]}, {bnd[line[1]]['UP'][col_idx]}) and cannot be reset.")
-                    bnd[line[1]]["LO"][col_idx] = float(line[3]) if line[0] == "FX" else -math.inf
-                    bnd[line[1]]["UP"][col_idx] = float(line[3]) if line[0] == "FX" else math.inf
-                    bnd_set[line[1]]["LO"][col_idx] = True
-                    bnd_set[line[1]]["UP"][col_idx] = True
-                # elif line[0] == "FR":
-                #     bnd[line[1]]["LO"][col_idx] = -math.inf
+                
+                bnd_spec = line[0] # LO, UP, LI etc.
+                bnd_name = line[1] # Name of the bound, e.g., "BND1"
+                col_name = line[2]
+                col_idx = col_names.index(col_name)
+                bnd_sense = "LO" if bnd_spec in ["LO", "LI", "MI"] else "UP"
+                if bnd_spec in ["LO", "UP"]:
+                    if bnd_set[bnd_name][bnd_sense][col_idx]:
+                        raise MPSParseError(f"Boundary {bnd_sense} of column {col_name} " \
+                            f"has been set to {bnd[bnd_name][bnd_sense][col_idx]} and cannot be reset.")
+                    bnd[bnd_name][bnd_sense][col_idx] = float(line[3])
+                    bnd_set[bnd_name][bnd_sense][col_idx] = True
+                elif bnd_spec in ["FX", "FR"]:
+                    if bnd_set[bnd_name]["LO"][col_idx] or bnd_set[bnd_name]["UP"][col_idx]:
+                        raise MPSParseError(f"Boundary of column {col_name} has been set to " \
+                            f"({bnd[bnd_name]['LO'][col_idx]}, {bnd[bnd_name]['UP'][col_idx]}) and cannot be reset.")
+                    bnd[bnd_name]["LO"][col_idx] = float(line[3]) if bnd_spec == "FX" else -math.inf
+                    bnd[bnd_name]["UP"][col_idx] = float(line[3]) if bnd_spec == "FX" else math.inf
+                    bnd_set[bnd_name]["LO"][col_idx] = True
+                    bnd_set[bnd_name]["UP"][col_idx] = True
+                elif bnd_spec in ["LI", "UI"]:
+                    if col_types[col_idx] != "integral":
+                        raise MPSParseError(f"Cannot set {bnd_spec} for a non-integer variable {col_name}.")
+
+                    if not line[3].isdigit():
+                        raise MPSParseError(f"Bound {bnd_sense} for {bnd_spec} must be an integer, not {line[3]}.")
+                    
+                    if bnd_set[bnd_name][bnd_sense][col_idx]:
+                        raise MPSParseError(f"Boundary {bnd_sense} of column {col_name} " \
+                            f"has been set to {bnd[bnd_name][bnd_sense][col_idx]} and cannot be reset.")
+
+                    bnd[bnd_name][bnd_sense][col_idx] = int(line[3])
+                    bnd_set[bnd_name][bnd_sense][col_idx] = True
+                elif bnd_spec in ["MI", "PL"]:
+                    if bnd_set[bnd_name][bnd_sense][col_idx]:
+                        raise MPSParseError(f"Boundary {bnd_sense} of column {col_name} " \
+                            f"has been set to {bnd[bnd_name][bnd_sense][col_idx]} and cannot be reset.")
+                    
+                    bnd[bnd_name][bnd_sense][col_idx] = -math.inf if bnd_spec == "MI" else math.inf
+                    bnd_set[bnd_name][bnd_sense][col_idx] = True
+                elif bnd_spec in ["BV"]:
+                    if col_types[col_idx] != "integral":
+                        raise MPSParseError(f"Cannot set {bnd_spec} for a non-integer variable {col_name} of type {types[col_idx]}.")
+                    
+                    if bnd_set[bnd_name]["LO"][col_idx] or bnd_set[bnd_name]["UP"][col_idx]:
+                        raise MPSParseError(f"Boundary of column {col_name} has been set to " \
+                            f"({bnd[bnd_name]['LO'][col_idx]}, {bnd[bnd_name]['UP'][col_idx]}) and cannot be reset.")
+
+                    bnd[bnd_name]["LO"][col_idx] = 0
+                    bnd[bnd_name]["UP"][col_idx] = 1
+                    bnd_set[bnd_name]["LO"][col_idx] = True
+                    bnd_set[bnd_name]["UP"][col_idx] = True
+                else:
+                    raise MPSParseError(f"Bound type {bnd_spec} not supported.")
+    
     return name, objsense, objective_name, row_names, col_names, col_types, types, c, A, rhs_names, rhs, bnd_names, bnd
 
 def load_smps(path):
